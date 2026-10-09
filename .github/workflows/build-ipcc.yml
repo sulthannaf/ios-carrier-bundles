@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-ipcc
+  cancel-in-progress: false
+
 jobs:
   build-ipcc:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
@@ -84,6 +88,7 @@ jobs:
       - name: Publish to Releases
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           NOTES=$(printf '%s\n' \
             "File .ipcc dari iOS ${VERSION} (${BUILD}). Berisi ${COUNT} operator." \
@@ -92,14 +97,39 @@ jobs:
             "- **All_Carrier_IPCC_iOS${VERSION}.zip**: semua file .ipcc saja." \
             "- File *.ipcc satuan: satu per operator.")
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          # Cek release berdasarkan tag lewat API (lebih andal daripada 'gh release view')
+          if gh api "repos/$GH_REPO/releases/tags/$TAG" --jq .id >/dev/null 2>&1; then
+            echo "Release $TAG sudah ada, memperbarui."
             gh release edit "$TAG" --notes "$NOTES"
           else
+            echo "Membuat release $TAG."
             gh release create "$TAG" --title "Carrier IPCC - iOS ${VERSION} (${BUILD})" --notes "$NOTES" --latest
+            sleep 10
           fi
 
-          gh release upload "$TAG" "All_Carrier_IPCC_iOS${VERSION}.zip" --clobber
+          # Unggah dengan coba ulang bila GitHub belum siap / gangguan sesaat
+          upload() {
+            for i in 1 2 3 4 5; do
+              if gh release upload "$TAG" "$@" --clobber; then return 0; fi
+              echo "Unggah gagal, coba lagi ($i/5)..."
+              sleep $((i * 10))
+            done
+            return 1
+          }
+
+          FAILED=0
           if [ -f "IPCC-Batch_iOS${VERSION}.zip" ]; then
-            gh release upload "$TAG" "IPCC-Batch_iOS${VERSION}.zip" --clobber
+            upload "IPCC-Batch_iOS${VERSION}.zip" || FAILED=1
           fi
-          find ipcc -name '*.ipcc' -print0 | xargs -0 -n 50 gh release upload "$TAG" --clobber
+          upload "All_Carrier_IPCC_iOS${VERSION}.zip" || FAILED=1
+
+          mapfile -t FILES < <(ls ipcc/*.ipcc)
+          for ((n = 0; n < ${#FILES[@]}; n += 50)); do
+            upload "${FILES[@]:n:50}" || FAILED=1
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::Sebagian file gagal diunggah. Jalankan ulang workflow."
+            exit 1
+          fi
+          echo "Semua file terunggah ke release $TAG."
