@@ -22,6 +22,7 @@ jobs:
   build-ipcc:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,22 +98,43 @@ jobs:
             "- **All_Carrier_IPCC_iOS${VERSION}.zip**: semua file .ipcc saja." \
             "- File *.ipcc satuan: satu per operator.")
 
-          # Cek release berdasarkan tag lewat API (lebih andal daripada 'gh release view')
-          if gh api "repos/$GH_REPO/releases/tags/$TAG" --jq .id >/dev/null 2>&1; then
-            echo "Release $TAG sudah ada, memperbarui."
-            gh release edit "$TAG" --notes "$NOTES"
-          else
-            echo "Membuat release $TAG."
-            gh release create "$TAG" --title "Carrier IPCC - iOS ${VERSION} (${BUILD})" --notes "$NOTES" --latest
-            sleep 10
-          fi
+          # Token Actions dibatasi 1000 permintaan API/jam per repo.
+          # Tunggu sampai kuota cukup sebelum mengunggah ratusan file.
+          wait_quota() {
+            local need=$1 rem reset now
+            read -r rem reset < <(gh api rate_limit --jq '.resources.core | "\(.remaining) \(.reset)"')
+            echo "Kuota API tersisa: $rem (butuh sekitar $need)"
+            if [ "$rem" -lt "$need" ]; then
+              now=$(date +%s)
+              local wait=$(( reset - now + 15 ))
+              [ "$wait" -lt 0 ] && wait=15
+              echo "Kuota belum cukup, menunggu $(( wait / 60 )) menit sampai kuota direset..."
+              sleep "$wait"
+            fi
+          }
 
-          # Unggah dengan coba ulang bila GitHub belum siap / gangguan sesaat
+          wait_quota $(( COUNT + 60 ))
+
+          # Hapus release lama dengan tag yang sama (1 panggilan, sekaligus semua asetnya),
+          # lalu buat ulang. Lebih hemat daripada --clobber per file.
+          if RID=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq .id 2>/dev/null); then
+            echo "Menghapus release lama $TAG (id $RID) untuk dibuat ulang."
+            gh api -X DELETE "repos/$GH_REPO/releases/$RID"
+            sleep 5
+          fi
+          echo "Membuat release $TAG."
+          gh release create "$TAG" --title "Carrier IPCC - iOS ${VERSION} (${BUILD})" --notes "$NOTES" --latest
+          sleep 10
+
+          # Unggah; bila gagal, tunggu kuota lalu coba lagi (dengan --clobber
+          # agar file yang sempat terunggah di percobaan sebelumnya tidak bentrok)
           upload() {
-            for i in 1 2 3 4 5; do
-              if gh release upload "$TAG" "$@" --clobber; then return 0; fi
-              echo "Unggah gagal, coba lagi ($i/5)..."
-              sleep $((i * 10))
+            gh release upload "$TAG" "$@" && return 0
+            for i in 1 2 3 4; do
+              echo "Unggah gagal, coba lagi ($i/4)..."
+              sleep $(( i * 15 ))
+              wait_quota $(( $# * 3 + 10 ))
+              gh release upload "$TAG" "$@" --clobber && return 0
             done
             return 1
           }
@@ -129,7 +151,7 @@ jobs:
           done
 
           if [ "$FAILED" -ne 0 ]; then
-            echo "::error::Sebagian file gagal diunggah. Jalankan ulang workflow."
+            echo "::error::Sebagian file gagal diunggah. Tunggu 1 jam lalu jalankan ulang workflow."
             exit 1
           fi
           echo "Semua file terunggah ke release $TAG."
