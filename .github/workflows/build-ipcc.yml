@@ -6,15 +6,22 @@ on:
         description: "Nama operator dipisah spasi (contoh: Telkomsel_id XL_id). Kosongkan = semua operator"
         required: false
         default: ""
+  # Otomatis jalan setiap kali "Update Carrier Bundles" selesai
+  workflow_run:
+    workflows: ["Update Carrier Bundles"]
+    types: [completed]
 
 permissions:
   contents: write
 
 jobs:
   build-ipcc:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Build .ipcc Files
         env:
@@ -22,8 +29,10 @@ jobs:
         run: |
           VERSION=$(jq -r '.version' ipsw_metadata.json)
           BUILD=$(jq -r '.build' ipsw_metadata.json)
+          TAG="ipcc-iOS-${VERSION}-${BUILD}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
           mkdir -p ipcc
           if [ -n "$OPERATORS" ]; then
@@ -48,15 +57,41 @@ jobs:
           COUNT=$(ls ipcc/*.ipcc | wc -l)
           echo "COUNT=$COUNT" >> "$GITHUB_ENV"
           echo "Selesai: $COUNT file .ipcc"
-          cd ipcc && zip -q -0 "../All_Carrier_IPCC_iOS${VERSION}.zip" *.ipcc
+          (cd ipcc && zip -q -0 "../All_Carrier_IPCC_iOS${VERSION}.zip" *.ipcc)
+
+      - name: Build IPCC-Batch Package (installer + semua .ipcc)
+        run: |
+          if [ ! -f ipcc-batch/install_all_ipcc.bat ]; then
+            echo "Folder ipcc-batch belum ada di repo, paket installer dilewati."
+            exit 0
+          fi
+          PKG="$RUNNER_TEMP/IPCC-Batch"
+          rm -rf "$PKG" && mkdir -p "$PKG/ipcc"
+          cp -r ipcc-batch/. "$PKG/"
+          cp ipcc/*.ipcc "$PKG/ipcc/"
+          printf '%s\r\n' "$TAG" > "$PKG/ipcc/VERSION.txt"
+          (cd "$RUNNER_TEMP" && zip -qr -9 "$GITHUB_WORKSPACE/IPCC-Batch_iOS${VERSION}.zip" IPCC-Batch)
+          ls -la "IPCC-Batch_iOS${VERSION}.zip"
 
       - name: Publish to Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="ipcc-iOS-${VERSION}-${BUILD}"
-          NOTES="File .ipcc dari iOS ${VERSION} (${BUILD}). Berisi ${COUNT} operator."
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "Carrier IPCC - iOS ${VERSION} (${BUILD})" --notes "$NOTES"
+          NOTES=$(printf '%s\n' \
+            "File .ipcc dari iOS ${VERSION} (${BUILD}). Berisi ${COUNT} operator." \
+            "" \
+            "- **IPCC-Batch_iOS${VERSION}.zip**: paket siap pakai (Windows). Ekstrak, sambungkan iPhone, jalankan install_all_ipcc.bat." \
+            "- **All_Carrier_IPCC_iOS${VERSION}.zip**: semua file .ipcc saja." \
+            "- File *.ipcc satuan: satu per operator.")
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" --title "Carrier IPCC - iOS ${VERSION} (${BUILD})" --notes "$NOTES" --latest
+          fi
+
           gh release upload "$TAG" "All_Carrier_IPCC_iOS${VERSION}.zip" --clobber
+          if [ -f "IPCC-Batch_iOS${VERSION}.zip" ]; then
+            gh release upload "$TAG" "IPCC-Batch_iOS${VERSION}.zip" --clobber
+          fi
           find ipcc -name '*.ipcc' -print0 | xargs -0 -n 50 gh release upload "$TAG" --clobber
