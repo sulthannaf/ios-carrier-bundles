@@ -1,0 +1,62 @@
+name: Build IPCC Files
+on:
+  workflow_dispatch:
+    inputs:
+      operators:
+        description: "Nama operator dipisah spasi (contoh: Telkomsel_id XL_id). Kosongkan = semua operator"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipcc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .ipcc Files
+        env:
+          OPERATORS: ${{ github.event.inputs.operators }}
+        run: |
+          VERSION=$(jq -r '.version' ipsw_metadata.json)
+          BUILD=$(jq -r '.build' ipsw_metadata.json)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+
+          mkdir -p ipcc
+          if [ -n "$OPERATORS" ]; then
+            LIST=""
+            for op in $OPERATORS; do LIST="$LIST ${op%.bundle}.bundle"; done
+          else
+            LIST=$(cd "Carrier Bundles" && ls -d *.bundle)
+          fi
+
+          for bundle in $LIST; do
+            if [ ! -d "Carrier Bundles/$bundle" ]; then
+              echo "Lewati: $bundle tidak ditemukan"; continue
+            fi
+            name="${bundle%.bundle}"
+            work="$RUNNER_TEMP/$name"
+            mkdir -p "$work/Payload"
+            cp -RL "Carrier Bundles/$bundle" "$work/Payload/"
+            (cd "$work" && zip -qrX "$GITHUB_WORKSPACE/ipcc/${name}_iOS${VERSION}.ipcc" Payload)
+            rm -rf "$work"
+          done
+
+          COUNT=$(ls ipcc/*.ipcc | wc -l)
+          echo "COUNT=$COUNT" >> "$GITHUB_ENV"
+          echo "Selesai: $COUNT file .ipcc"
+          cd ipcc && zip -q -0 "../All_Carrier_IPCC_iOS${VERSION}.zip" *.ipcc
+
+      - name: Publish to Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="ipcc-iOS-${VERSION}-${BUILD}"
+          NOTES="File .ipcc dari iOS ${VERSION} (${BUILD}). Berisi ${COUNT} operator."
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "Carrier IPCC - iOS ${VERSION} (${BUILD})" --notes "$NOTES"
+          gh release upload "$TAG" "All_Carrier_IPCC_iOS${VERSION}.zip" --clobber
+          find ipcc -name '*.ipcc' -print0 | xargs -0 -n 50 gh release upload "$TAG" --clobber
