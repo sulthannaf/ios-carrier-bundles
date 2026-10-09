@@ -1,0 +1,15 @@
+IPCC BATCH INSTALLER
+====================
+
+Cara pakai:
+1. Pasang iTunes / Apple Devices (Microsoft Store) / 3uTools di PC.
+2. Tutup 3uTools, sambungkan iPhone, buka kunci layar, ketuk "Trust".
+3. Klik dua kali install_all_ipcc.bat.
+4. Setelah selesai, restart iPhone.
+
+- Folder ipcc otomatis diperbarui dari GitHub Release terbaru
+  (butuh internet). Matikan dengan AUTO_UPDATE=0 di dalam .bat.
+- Ubah PRIORITAS di dalam .bat agar operator SIM Anda dipasang
+  paling akhir.
+- iPhone hanya memakai bundle yang cocok dengan SIM yang terpasang.
+- Hasil tiap file tercatat di install_log.txt.
