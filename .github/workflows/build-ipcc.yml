@@ -61,13 +61,21 @@ jobs:
 
       - name: Build IPCC-Batch Package (installer + semua .ipcc)
         run: |
-          if [ ! -f ipcc-batch/install_all_ipcc.bat ]; then
-            echo "Folder ipcc-batch belum ada di repo, paket installer dilewati."
+          # Terima nama folder ipcc-batch maupun IPCC-Batch
+          SRC=""
+          for d in ipcc-batch IPCC-Batch; do
+            if [ -f "$d/install_all_ipcc.bat" ]; then SRC="$d"; break; fi
+          done
+          if [ -z "$SRC" ]; then
+            echo "Folder ipcc-batch / IPCC-Batch belum ada di repo, paket installer dilewati."
             exit 0
           fi
+          echo "Memakai folder installer: $SRC"
           PKG="$RUNNER_TEMP/IPCC-Batch"
-          rm -rf "$PKG" && mkdir -p "$PKG/ipcc"
-          cp -r ipcc-batch/. "$PKG/"
+          rm -rf "$PKG" && mkdir -p "$PKG"
+          cp -r "$SRC"/. "$PKG/"
+          mkdir -p "$PKG/ipcc"
+          rm -f "$PKG"/ipcc/*.ipcc "$PKG"/install_log.txt
           cp ipcc/*.ipcc "$PKG/ipcc/"
           printf '%s\r\n' "$TAG" > "$PKG/ipcc/VERSION.txt"
           (cd "$RUNNER_TEMP" && zip -qr -9 "$GITHUB_WORKSPACE/IPCC-Batch_iOS${VERSION}.zip" IPCC-Batch)
